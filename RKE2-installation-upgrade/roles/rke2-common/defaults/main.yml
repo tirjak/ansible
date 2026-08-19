@@ -1,0 +1,15 @@
+---
+# RKE2 Version Configuration
+rke2_version: "latest"
+rke2_channel: "stable"
+
+# RKE2 Paths
+rke2_install_dir: "/opt/rke2"
+rke2_config_dir: "/etc/rancher/rke2"
+rke2_data_dir: "/var/lib/rancher/rke2"
+
+# RKE2 Token (IMPORTANT: Change this to a secure value)
+rke2_token: "change-me-to-a-secure-token-min-32-chars"
+
+# System Configuration
+rke2_disable_local_storage: true

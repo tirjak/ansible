@@ -1,0 +1,106 @@
+---
+- name: Setup RKE2 Kubernetes Cluster
+  hosts: all
+  become: yes
+  vars:
+    rke2_version: "latest"  # Change to specific version if needed (e.g., "v1.28.0")
+    rke2_channel: "stable"
+    node_role: "{{ 'server' if inventory_hostname == groups['all'][0] else 'agent' }}"
+    control_plane_ip: "{{ hostvars[groups['all'][0]]['ansible_default_ipv4']['address'] }}"
+
+  pre_tasks:
+    - name: Update system packages
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install required dependencies
+      apt:
+        name:
+          - curl
+          - wget
+          - git
+          - net-tools
+          - jq
+        state: present
+
+  tasks:
+    - name: Set hostname for nodes
+      hostname:
+        name: "{{ inventory_hostname }}"
+      when: inventory_hostname is defined
+
+    - name: Download RKE2 installer
+      shell: |
+        curl -sfL https://get.rke2.io | sh -
+      args:
+        creates: /usr/local/bin/rke2
+
+    - name: Create RKE2 directory structure
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - /etc/rancher/rke2
+        - /var/lib/rancher/rke2/server/manifests
+
+    - name: Configure control plane (server)
+      copy:
+        dest: /etc/rancher/rke2/config.yaml
+        content: |
+          server: https://{{ control_plane_ip }}:6443
+          token: {{ rke2_token | default('change-me') }}
+          disable:
+            - local-storage
+        mode: '0644'
+      when: node_role == 'server'
+
+    - name: Configure worker node (agent)
+      copy:
+        dest: /etc/rancher/rke2/config.yaml
+        content: |
+          server: https://{{ control_plane_ip }}:6443
+          token: {{ rke2_token | default('change-me') }}
+        mode: '0644'
+      when: node_role == 'agent'
+
+    - name: Enable and start RKE2 service (control plane)
+      systemd:
+        name: rke2-server
+        daemon_reload: yes
+        enabled: yes
+        state: started
+      when: node_role == 'server'
+      register: rke2_server_start
+
+    - name: Enable and start RKE2 service (worker nodes)
+      systemd:
+        name: rke2-agent
+        daemon_reload: yes
+        enabled: yes
+        state: started
+      when: node_role == 'agent'
+
+    - name: Wait for RKE2 server to be ready
+      shell: |
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes
+      retries: 30
+      delay: 10
+      changed_when: false
+      when: node_role == 'server'
+
+  post_tasks:
+    - name: Retrieve kubeconfig from control plane
+      fetch:
+        src: /etc/rancher/rke2/rke2.yaml
+        dest: ./kubeconfig-rke2
+        flat: yes
+      when: node_role == 'server'
+      run_once: yes
+
+    - name: Display cluster status
+      shell: |
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes -o wide
+      changed_when: false
+      when: node_role == 'server'

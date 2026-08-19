@@ -1,0 +1,64 @@
+---
+# RKE2 Upgrade Tasks
+# This role updates RKE2 to a newer version
+
+- name: Get current RKE2 version
+  shell: /usr/local/bin/rke2 --version
+  changed_when: false
+  register: current_version
+
+- name: Display current version
+  debug:
+    msg: "Current RKE2 version: {{ current_version.stdout }}"
+
+- name: Cordon node before upgrade
+  shell: |
+    {{ rke2_data_dir }}/bin/kubectl --kubeconfig {{ rke2_config_dir }}/rke2.yaml cordon {{ inventory_hostname }}
+  changed_when: false
+  when: inventory_hostname != groups['rke2_cluster'][0]
+  delegate_to: "{{ groups['rke2_cluster'][0] }}"
+
+- name: Drain node before upgrade
+  shell: |
+    {{ rke2_data_dir }}/bin/kubectl --kubeconfig {{ rke2_config_dir }}/rke2.yaml drain {{ inventory_hostname }} --ignore-daemonsets --delete-emptydir-data
+  changed_when: false
+  when: inventory_hostname != groups['rke2_cluster'][0]
+  delegate_to: "{{ groups['rke2_cluster'][0] }}"
+  ignore_errors: yes
+
+- name: Download updated RKE2 installer
+  shell: |
+    curl -sfL https://get.rke2.io | INSTALL_RKE2_VERSION="{{ rke2_upgrade_version }}" INSTALL_RKE2_CHANNEL="{{ rke2_upgrade_channel }}" sh -
+  register: rke2_upgrade
+
+- name: Restart RKE2 service
+  systemd:
+    name: "{{ rke2_service_name }}"
+    state: restarted
+
+- name: Wait for service to be ready
+  shell: |
+    {% if rke2_service_name == 'rke2-server' %}
+    {{ rke2_data_dir }}/bin/kubectl --kubeconfig {{ rke2_config_dir }}/rke2.yaml get nodes
+    {% else %}
+    curl -sk https://localhost:10250/healthz
+    {% endif %}
+  retries: 30
+  delay: 5
+  changed_when: false
+
+- name: Uncordon node after upgrade
+  shell: |
+    {{ rke2_data_dir }}/bin/kubectl --kubeconfig {{ rke2_config_dir }}/rke2.yaml uncordon {{ inventory_hostname }}
+  changed_when: false
+  when: inventory_hostname != groups['rke2_cluster'][0]
+  delegate_to: "{{ groups['rke2_cluster'][0] }}"
+
+- name: Get new RKE2 version
+  shell: /usr/local/bin/rke2 --version
+  changed_when: false
+  register: new_version
+
+- name: Display upgrade result
+  debug:
+    msg: "RKE2 upgraded from {{ current_version.stdout.split()[1] }} to {{ new_version.stdout.split()[1] }}"

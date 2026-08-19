@@ -1,0 +1,16 @@
+---
+# Control Plane specific defaults
+rke2_server_service_name: rke2-server
+
+# Get control plane IP from first host
+rke2_control_plane_ip: "{{ hostvars[groups['rke2_cluster'][0]]['ansible_default_ipv4']['address'] }}"
+
+# Server configuration options
+rke2_server_config:
+  disable:
+    - local-storage
+  # Add more server options as needed, e.g.:
+  # etcd-arg:
+  #   - auto-compaction-retention=72h
+  # kubelet-arg:
+  #   - max-pods=200

@@ -1,0 +1,5 @@
+---
+- name: Restart RKE2 agent
+  systemd:
+    name: "{{ rke2_agent_service_name }}"
+    state: restarted

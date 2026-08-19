@@ -1,0 +1,80 @@
+---
+- name: Update apt cache
+  shell: sudo apt update
+  changed_when: false
+
+- name: Upgrade all packages
+  shell: sudo apt upgrade -y
+  register: apt_upgrade
+
+- name: Update system packages
+  apt:
+    update_cache: yes
+    cache_valid_time: 3600
+
+- name: Install required dependencies
+  apt:
+    name:
+      - curl
+      - wget
+      - git
+      - net-tools
+      - jq
+      - apt-transport-https
+      - ca-certificates
+      - gnupg
+      - lsb-release
+      - sudo
+    state: present
+
+- name: Set hostname
+  hostname:
+    name: "{{ inventory_hostname }}"
+
+- name: Create RKE2 directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: '0755'
+  loop:
+    - "{{ rke2_config_dir }}"
+    - "{{ rke2_data_dir }}/server/manifests"
+    - "{{ rke2_data_dir }}/agent"
+
+- name: Download RKE2 installer
+  shell: |
+    curl -sfL https://get.rke2.io | INSTALL_RKE2_VERSION="{{ rke2_version }}" sh -
+  args:
+    creates: /usr/local/bin/rke2
+  register: rke2_install
+  changed_when: "'Creating' in rke2_install.stdout or 'installed' in rke2_install.stderr"
+
+- name: Copy systemd service files to standard location
+  shell: |
+    cp /usr/local/lib/systemd/system/rke2-server.service /etc/systemd/system/
+    cp /usr/local/lib/systemd/system/rke2-agent.service /etc/systemd/system/
+  args:
+    creates: /etc/systemd/system/rke2-server.service
+
+- name: Create symbolic links for kubectl
+  file:
+    src: "{{ rke2_data_dir }}/bin/kubectl"
+    dest: /usr/local/bin/kubectl
+    state: link
+    force: yes
+
+- name: Create symbolic links for crictl
+  file:
+    src: "{{ rke2_data_dir }}/bin/crictl"
+    dest: /usr/local/bin/crictl
+    state: link
+    force: yes
+
+- name: Verify RKE2 installation
+  command: /usr/local/bin/rke2 --version
+  changed_when: false
+  register: rke2_version_check
+
+- name: Display RKE2 version
+  debug:
+    msg: "RKE2 installed: {{ rke2_version_check.stdout }}"

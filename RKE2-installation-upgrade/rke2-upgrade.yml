@@ -1,0 +1,19 @@
+---
+- name: Upgrade RKE2 Cluster
+  hosts: rke2_cluster
+  serial: "{{ rke2_upgrade_batch_size | default(1) }}"
+  become: yes
+
+  tasks:
+    - name: Include rke2-upgrade role
+      include_role:
+        name: rke2-upgrade
+      tags:
+        - rke2-upgrade
+
+  post_tasks:
+    - name: Display cluster status after upgrade
+      shell: |
+        {{ rke2_data_dir }}/bin/kubectl --kubeconfig {{ rke2_config_dir }}/rke2.yaml get nodes -o wide
+      changed_when: false
+      when: inventory_hostname == groups['rke2_cluster'][0]

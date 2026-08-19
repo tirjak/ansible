@@ -1,0 +1,23 @@
+---
+# RKE2 Cluster Shared Configuration
+# These variables apply to all nodes in the rke2_cluster group
+
+# RKE2 Version and Channel
+rke2_version: "v1.36.3+rke2r1"
+rke2_channel: "stable"
+
+# Security Token (IMPORTANT: Override this in your environment)
+# Generate with: head -c 32 /dev/urandom | base64
+rke2_token: "rke2-secure-token-cluster-setup-12345"
+
+# RKE2 Configuration Paths (generally don't change these)
+rke2_config_dir: "/etc/rancher/rke2"
+rke2_data_dir: "/var/lib/rancher/rke2"
+
+# Server-specific configuration
+rke2_server_config:
+  disable:
+    - local-storage
+
+# Agent-specific configuration
+rke2_agent_config: {}

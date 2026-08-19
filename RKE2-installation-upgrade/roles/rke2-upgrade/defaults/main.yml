@@ -1,0 +1,14 @@
+---
+# RKE2 Upgrade Configuration
+# This role will handle version upgrades
+
+# Target version for upgrade
+rke2_upgrade_version: "latest"  # Override with specific version: v1.28.0, v1.29.0, etc.
+rke2_upgrade_channel: "stable"
+
+# Service name (server or agent)
+rke2_service_name: "{{ 'rke2-server' if inventory_hostname == groups['rke2_cluster'][0] else 'rke2-agent' }}"
+
+# Upgrade strategy
+rke2_upgrade_strategy: "serial"  # serial = one at a time, parallel = all at once (not recommended)
+rke2_upgrade_batch_size: 1      # Number of nodes to upgrade simultaneously

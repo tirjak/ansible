@@ -1,0 +1,59 @@
+---
+- name: Generate RKE2 server config
+  template:
+    src: config.yaml.j2
+    dest: "{{ rke2_config_dir }}/config.yaml"
+    mode: '0644'
+
+- name: Reload systemd daemon
+  systemd:
+    daemon_reload: yes
+
+- name: Enable and start RKE2 server service
+  systemd:
+    name: "{{ rke2_server_service_name }}"
+    enabled: yes
+    state: started
+
+- name: Wait for RKE2 server to be ready
+  shell: |
+    export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+    until /var/lib/rancher/rke2/bin/kubectl --insecure-skip-tls-verify get nodes &>/dev/null; do
+      echo "Waiting for API server to be ready..."
+      sleep 10
+    done
+    echo "API server is ready"
+  retries: 60
+  delay: 10
+  changed_when: false
+  register: rke2_server_ready
+
+- name: Display control plane readiness
+  debug:
+    msg: "Control plane is ready"
+
+- name: Get RKE2 token for agent nodes
+  slurp:
+    src: "{{ rke2_data_dir }}/server/node-token"
+  register: rke2_node_token
+  no_log: true
+  ignore_errors: yes
+  retries: 10
+  delay: 2
+  until: rke2_node_token is not failed
+
+- name: Set fact for node token
+  set_fact:
+    rke2_retrieved_token: "{{ rke2_node_token['content'] | b64decode | trim }}"
+    rke2_node_token_value: "{{ rke2_node_token['content'] | b64decode | trim }}"
+  no_log: true
+  when:
+    - rke2_node_token is not failed
+    - rke2_node_token is defined
+
+- name: Ensure kubectl is accessible
+  shell: |
+    sudo cp /var/lib/rancher/rke2/bin/kubectl /usr/local/bin/kubectl
+    sudo chmod +x /usr/local/bin/kubectl
+    /usr/local/bin/kubectl version --client
+  changed_when: false

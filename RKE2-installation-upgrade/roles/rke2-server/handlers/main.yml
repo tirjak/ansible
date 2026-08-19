@@ -1,0 +1,5 @@
+---
+- name: Restart RKE2 server
+  systemd:
+    name: "{{ rke2_server_service_name }}"
+    state: restarted

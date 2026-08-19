@@ -1,0 +1,14 @@
+---
+# Agent/Worker node specific defaults
+rke2_agent_service_name: rke2-agent
+
+# Get control plane IP
+rke2_control_plane_ip: "{{ hostvars[groups['rke2_cluster'][0]]['ansible_default_ipv4']['address'] }}"
+rke2_server_url: "https://{{ rke2_control_plane_ip }}:6443"
+
+# Agent configuration options
+rke2_agent_config: {}
+  # Add agent-specific options as needed, e.g.:
+  # kubelet-arg:
+  #   - max-pods=200
+  #   - pod-infra-container-image=...
