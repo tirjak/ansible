@@ -1,7 +1,38 @@
 ---
-- name: Install RKE2 Kubernetes Cluster
-  hosts: rke2_cluster
+- name: Pre-scan SSH host keys for all instances
+  hosts: localhost
+  gather_facts: no
+  become: no
+  tasks:
+    - name: Scan and add host keys for all cluster nodes
+      ansible.builtin.known_hosts:
+        name: "{{ hostvars[item]['ansible_host'] }}"
+        key: "{{ lookup('pipe', 'ssh-keyscan -H ' + hostvars[item]['ansible_host'] + ' 2>/dev/null') }}"
+        state: present
+      loop: "{{ groups['rke2_cluster'] }}"
+      changed_when: false
+      ignore_errors: yes
+      tags:
+        - always
+
+###############################################################################
+# PLAY 1: Install Control Plane (RKE2 Server)
+###############################################################################
+- name: Install RKE2 Control Plane
+  hosts: "{{ groups['rke2_cluster'][0] }}"
   become: yes
+  gather_facts: yes
+
+  pre_tasks:
+    - name: Wait for apt lock to be released
+      shell: |
+        while sudo lsof /var/lib/apt/lists/lock >/dev/null 2>&1; do
+          echo "Waiting for apt lock to be released..."
+          sleep 5
+        done
+      changed_when: false
+      tags:
+        - always
 
   roles:
     - role: rke2-common
@@ -9,100 +40,220 @@
         - always
 
     - role: rke2-server
-      when: inventory_hostname == groups['rke2_cluster'][0]
       tags:
         - rke2-server
 
   tasks:
-    - name: Wait for control plane to be ready before deploying agents
+    - name: Wait for control plane API to be fully ready
       shell: |
         export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
         until /var/lib/rancher/rke2/bin/kubectl --insecure-skip-tls-verify get nodes &>/dev/null; do
-          echo "Waiting for control plane..."
+          echo "Waiting for API server to be ready..."
           sleep 5
         done
-      retries: 30
+        echo "API server is ready!"
+      retries: 60
       delay: 5
       changed_when: false
-      when: inventory_hostname == groups['rke2_cluster'][0]
       tags:
         - rke2-server
 
-    - name: Retrieve node token from control plane
+    - name: Verify RKE2 server is running
+      shell: |
+        sudo systemctl is-active rke2-server
+      changed_when: false
+      tags:
+        - rke2-server
+
+    - name: Get node token from control plane
       slurp:
         src: "{{ rke2_data_dir }}/server/node-token"
       register: rke2_node_token_content
       no_log: true
-      when: inventory_hostname == groups['rke2_cluster'][0]
       tags:
         - rke2-server
-        - rke2-agent
 
-    - name: Set fact for retrieved token
+    - name: Set node token fact
       set_fact:
         rke2_node_token_value: "{{ rke2_node_token_content['content'] | b64decode | trim }}"
         cacheable: yes
       no_log: true
-      when:
-        - inventory_hostname == groups['rke2_cluster'][0]
-        - rke2_node_token_content is defined
-        - rke2_node_token_content is not failed
       tags:
         - rke2-server
-        - rke2-agent
 
-    - name: Deploy agents with retrieved token
-      include_role:
-        name: rke2-agent
-      vars:
-        rke2_token: "{{ hostvars[groups['rke2_cluster'][0]].get('rke2_node_token_value', rke2_token) }}"
-      when:
-        - inventory_hostname != groups['rke2_cluster'][0]
-        - hostvars[groups['rke2_cluster'][0]].get('rke2_node_token_value') is defined
+    - name: Display control plane status
+      shell: |
+        echo "=== Control Plane Status ==="
+        sudo systemctl status rke2-server --no-pager | head -15
+        echo ""
+        echo "=== Cluster Nodes ==="
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        /var/lib/rancher/rke2/bin/kubectl get nodes -o wide
+      changed_when: false
+      register: cp_status
       tags:
-        - rke2-agent
+        - rke2-server
+
+    - name: Show control plane status output
+      debug:
+        msg: "{{ cp_status.stdout }}"
+      tags:
+        - rke2-server
 
   post_tasks:
     - name: Install kubectl on control plane
       shell: |
         sudo cp /var/lib/rancher/rke2/bin/kubectl /usr/local/bin/kubectl
         sudo chmod +x /usr/local/bin/kubectl
-      when: inventory_hostname == groups['rke2_cluster'][0]
       tags:
         - always
 
-    - name: Setup kubectl environment on control plane
+    - name: Setup kubectl environment
       shell: |
-        # Set KUBECONFIG for ubuntu user
         if ! grep -q 'KUBECONFIG=/etc/rancher/rke2/rke2.yaml' /home/ubuntu/.bashrc; then
           echo 'export KUBECONFIG=/etc/rancher/rke2/rke2.yaml' >> /home/ubuntu/.bashrc
         fi
-
-        # Set KUBECONFIG for root user
         if ! grep -q 'KUBECONFIG=/etc/rancher/rke2/rke2.yaml' /root/.bashrc; then
           echo 'export KUBECONFIG=/etc/rancher/rke2/rke2.yaml' >> /root/.bashrc
         fi
-
-        # Create global profile.d script for all users
         echo 'export KUBECONFIG=/etc/rancher/rke2/rke2.yaml' | sudo tee /etc/profile.d/rke2-kubectl.sh > /dev/null
         sudo chmod +x /etc/profile.d/rke2-kubectl.sh
-      when: inventory_hostname == groups['rke2_cluster'][0]
       tags:
         - always
 
-    - name: Verify kubectl works on control plane
+    - name: Create .kube directory for ubuntu user
+      file:
+        path: /home/ubuntu/.kube
+        state: directory
+        mode: '0700'
+        owner: ubuntu
+        group: ubuntu
+      tags:
+        - always
+
+    - name: Copy kubeconfig to ~/.kube/config for ubuntu user
       shell: |
-        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        sudo cp /etc/rancher/rke2/rke2.yaml /home/ubuntu/.kube/config
+        sudo chown ubuntu:ubuntu /home/ubuntu/.kube/config
+        sudo chmod 600 /home/ubuntu/.kube/config
+      tags:
+        - always
+
+    - name: Create .kube directory for root user
+      file:
+        path: /root/.kube
+        state: directory
+        mode: '0700'
+        owner: root
+        group: root
+      tags:
+        - always
+
+    - name: Copy kubeconfig to ~/.kube/config for root user
+      shell: |
+        sudo cp /etc/rancher/rke2/rke2.yaml /root/.kube/config
+        sudo chown root:root /root/.kube/config
+        sudo chmod 600 /root/.kube/config
+      tags:
+        - always
+
+    - name: Verify kubectl works
+      shell: |
         /usr/local/bin/kubectl get nodes -o wide
       changed_when: false
-      when: inventory_hostname == groups['rke2_cluster'][0]
-      register: kubectl_output
+      register: kubectl_verify
       tags:
         - always
 
-    - name: Display cluster status
+    - name: Display kubectl verification
       debug:
-        msg: "{{ kubectl_output.stdout }}"
-      when: inventory_hostname == groups['rke2_cluster'][0]
+        msg: "{{ kubectl_verify.stdout }}"
+      tags:
+        - always
+
+###############################################################################
+# PLAY 2: Install Worker Nodes (RKE2 Agents)
+###############################################################################
+- name: Install RKE2 Worker Nodes
+  hosts: "{{ groups['rke2_cluster'][1:] }}"
+  become: yes
+  gather_facts: yes
+  serial: 1
+
+  vars:
+    rke2_token: "{{ hostvars[groups['rke2_cluster'][0]]['rke2_node_token_value'] }}"
+
+  pre_tasks:
+    - name: Wait for apt lock to be released on worker
+      shell: |
+        while sudo lsof /var/lib/apt/lists/lock >/dev/null 2>&1; do
+          echo "Waiting for apt lock to be released..."
+          sleep 5
+        done
+      changed_when: false
+      tags:
+        - always
+
+    - name: Verify control plane token is available
+      debug:
+        msg: "Using token from control plane (length: {{ rke2_token | length }})"
+      tags:
+        - rke2-agent
+
+  roles:
+    - role: rke2-common
+      tags:
+        - always
+
+    - role: rke2-agent
+      tags:
+        - rke2-agent
+
+  post_tasks:
+    - name: Display worker join status
+      debug:
+        msg: "Worker {{ inventory_hostname }} has been configured and should join the cluster"
+      tags:
+        - rke2-agent
+
+    - name: Wait and verify node registration
+      shell: |
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        until ssh -i ~/github/ec2.pem ubuntu@{{ groups['rke2_cluster'][0] }} "sudo /var/lib/rancher/rke2/bin/kubectl get nodes | grep -q {{ inventory_hostname }}" 2>/dev/null; do
+          echo "Waiting for {{ inventory_hostname }} to register..."
+          sleep 10
+        done
+        echo "{{ inventory_hostname }} is now registered!"
+      retries: 30
+      delay: 10
+      changed_when: false
+      ignore_errors: yes
+      tags:
+        - rke2-agent
+
+###############################################################################
+# PLAY 3: Final Cluster Status
+###############################################################################
+- name: Display Final Cluster Status
+  hosts: "{{ groups['rke2_cluster'][0] }}"
+  gather_facts: no
+
+  tasks:
+    - name: Show final cluster status
+      shell: |
+        echo "=== Final Cluster Status ==="
+        export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        /var/lib/rancher/rke2/bin/kubectl get nodes -o wide
+        echo ""
+        echo "=== All Pods ==="
+        /var/lib/rancher/rke2/bin/kubectl get pods -A
+      changed_when: false
+      register: final_status
+      tags:
+        - always
+
+    - name: Display final status
+      debug:
+        msg: "{{ final_status.stdout }}"
       tags:
         - always

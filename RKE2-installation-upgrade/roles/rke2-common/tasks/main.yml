@@ -1,16 +1,9 @@
 ---
 - name: Update apt cache
-  shell: sudo apt update
-  changed_when: false
-
-- name: Upgrade all packages
-  shell: sudo apt upgrade -y
-  register: apt_upgrade
-
-- name: Update system packages
   apt:
     update_cache: yes
     cache_valid_time: 3600
+  changed_when: false
 
 - name: Install required dependencies
   apt:
