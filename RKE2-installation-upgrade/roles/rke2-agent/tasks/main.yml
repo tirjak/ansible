@@ -8,29 +8,6 @@
   register: cp_ready
   until: cp_ready.rc == 0
 
-- name: Fetch CA certificate from control plane control node (workaround for RKE2 v1.36.3 bootstrap issue)
-  delegate_to: "{{ groups['rke2_cluster'][0] }}"
-  slurp:
-    src: /var/lib/rancher/rke2/server/tls/server-ca.crt
-  register: cp_ca_cert
-  become: yes
-  ignore_errors: yes
-
-- name: Create RKE2 TLS directory
-  file:
-    path: /var/lib/rancher/rke2/server/tls
-    state: directory
-    mode: '0755'
-  become: yes
-
-- name: Install CA certificate on agent (workaround for RKE2 v1.36.3 bootstrap issue)
-  copy:
-    content: "{{ cp_ca_cert.content | b64decode }}"
-    dest: /var/lib/rancher/rke2/server/tls/server-ca.crt
-    mode: '0644'
-  become: yes
-  when: cp_ca_cert.content is defined
-
 - name: Ensure RKE2 config directory exists
   file:
     path: "{{ rke2_config_dir }}"

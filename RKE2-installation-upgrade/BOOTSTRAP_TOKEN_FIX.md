@@ -1,101 +1,49 @@
-# RKE2 Bootstrap Token Authentication Issue - Fix Documentation
+# RKE2 Agent Join Failure - Root Cause and Fix
 
-## Problem Summary
+## Problem
 
-The RKE2 agent (worker nodes) was failing to join the cluster with the error:
+Worker (agent) nodes failed to join the cluster with:
 ```
-Failed to validate connection to cluster at https://10.0.1.179:6443: failed to get CA certs: Unauthorized
+Failed to validate connection to cluster at https://<control-plane-ip>:6443: failed to get CA certs: Unauthorized
 ```
-
-This occurred with RKE2 v1.36.3+rke2r1 when agents tried to bootstrap using the standard bootstrap token authentication mechanism.
 
 ## Root Cause
 
-RKE2 v1.36.3 appears to have an issue with the bootstrap token authenticator that validates agent connections during the bootstrap phase. When agents attempt to fetch the cluster's CA certificate using the bootstrap token for authentication, the control plane returns a 401 Unauthorized response.
+RKE2 exposes two separate HTTPS listeners on the control plane:
 
-The issue is NOT:
-- Network connectivity (verified via curl)
-- Token format (token is correctly generated and matches)
-- Control plane availability (API responds correctly)
-- Token presence (node-token file exists with correct content)
+- **Port 6443** - the Kubernetes API server. Requires an authenticated kubeconfig; rejects unauthenticated requests (including `/cacerts`) with `401 Unauthorized`.
+- **Port 9345** - the RKE2 **supervisor** port. This is what agents use to bootstrap: fetch the CA certificate, register, and receive cluster config. It answers `/cacerts` without authentication (confirmed via `curl -sk https://<ip>:9345/cacerts` returning `200` with the CA cert).
 
-The issue IS:
-- RKE2's bootstrap token authenticator not accepting or validating the bootstrap token properly
-- This may be a known bug in v1.36.3 or related to cluster configuration
+`roles/rke2-agent/defaults/main.yml` had agents pointed at port 6443:
 
-## Solution Implemented
-
-Added a workaround in `roles/rke2-agent/tasks/main.yml` that:
-
-1. Waits for control plane API to be ready
-2. Fetches the CA certificate directly from the control plane using Ansible delegation
-3. Creates the RKE2 TLS directory on the agent
-4. Installs the CA certificate locally on the agent
-
-This allows the agent to proceed with bootstrap even if the bootstrap token authenticator is not working. The agent can now use the CA certificate it already has to validate the control plane connection, bypassing the failed bootstrap token validation.
-
-## Changes Made
-
-**File Modified:** `roles/rke2-agent/tasks/main.yml`
-
-**New Tasks Added:**
-- `Fetch CA certificate from control plane control node` - Retrieves CA cert via delegation
-- `Create RKE2 TLS directory` - Ensures directory exists
-- `Install CA certificate on agent` - Copies cert locally
-
-## Testing
-
-To verify the fix works:
-
-1. Clean both control plane and agent:
-```bash
-ssh -i ~/github/ec2.pem ubuntu@<control-plane-ip> "sudo systemctl stop rke2-server && sudo rm -rf /etc/rancher/rke2 /var/lib/rancher/rke2"
-ssh -i ~/github/ec2.pem ubuntu@<worker-ip> "sudo systemctl stop rke2-agent && sudo rm -rf /etc/rancher/rke2 /var/lib/rancher/rke2"
+```yaml
+rke2_server_url: "https://{{ rke2_control_plane_ip }}:6443"
 ```
 
-2. Run the updated playbook:
-```bash
-ansible-playbook -i inventory.ini rke2-install.yml -v
+Agents therefore hit the Kubernetes API server instead of the supervisor, which correctly returned 401 for the unauthenticated `/cacerts` call. This produced the exact error seen, and had nothing to do with the token value, the CA certificate content, or network connectivity - all of which were verified correct during debugging.
+
+## Fix
+
+Changed the agent server URL to use port 9345:
+
+```yaml
+# roles/rke2-agent/defaults/main.yml
+rke2_server_url: "https://{{ rke2_control_plane_ip }}:9345"
 ```
 
-3. Verify the agent joined the cluster:
+Verified directly on a worker node before applying the fix:
+
 ```bash
-ssh -i ~/github/ec2.pem ubuntu@<control-plane-ip> "export KUBECONFIG=/etc/rancher/rke2/rke2.yaml && kubectl get nodes"
+curl -sk -o /dev/null -w '%{http_code}\n' https://<control-plane-ip>:6443/cacerts   # 401
+curl -sk -o /dev/null -w '%{http_code}\n' https://<control-plane-ip>:9345/cacerts   # 200
 ```
 
-The agent should now appear in the nodes list with `Ready` status.
+## Infrastructure note
 
-## Alternative Solutions (Not Implemented)
+Your EC2 security group / firewall must allow port **9345** between worker nodes and the control plane, in addition to 6443 and 10250. Add this to your security group rules if it isn't already open.
 
-### Option 1: Use Different RKE2 Version
-Upgrade to a newer RKE2 version (v1.27+) where this issue may be fixed.
-- Pros: No workaround needed
-- Cons: Version lock/testing required
+## Dead ends ruled out during debugging (for reference)
 
-### Option 2: Pre-Generate Bootstrap Token Secret
-Manually create Kubernetes bootstrap token secrets in the cluster before starting agents.
-- Pros: Uses standard Kubernetes mechanism
-- Cons: Complex, requires manual cluster setup
-
-### Option 3: Disable TLS Verification
-Configure agents with insecure TLS settings.
-- Pros: Simple
-- Cons: Security risk, not production-recommended
-
-## Recommendations
-
-1. **Verify the fix works** in your environment
-2. **Test upgrades** to confirm agents upgrade smoothly
-3. **Monitor for issues** in your RKE2 version v1.36.3
-4. **Plan to upgrade** to a newer RKE2 version for long-term support
-5. **Report the issue** to Rancher/RKE2 team if not already reported
-
-## References
-
-- RKE2 GitHub: https://github.com/rancher/rke2
-- RKE2 Docs: https://docs.rke2.io/
-- Kubernetes Bootstrap Tokens: https://kubernetes.io/docs/reference/access-authn-authz/bootstrap-tokens/
-
-## Created
-
-2026-08-20 - During bootstrap token authentication debugging
+- Token mismatch between control plane and agent config - confirmed identical, not the cause.
+- CA certificate not present on the agent - manually pre-installing the CA cert on the agent did not fix the issue, confirming the failure was in the network call to the wrong port, not in local cert trust.
+- Stale cluster state - reproduced on a fully clean install (control plane and worker wiped with the official `rke2-uninstall.sh`), ruling out leftover state from earlier attempts.

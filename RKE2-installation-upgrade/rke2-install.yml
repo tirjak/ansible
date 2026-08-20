@@ -4,14 +4,31 @@
   gather_facts: no
   become: no
   tasks:
-    - name: Scan and add host keys for all cluster nodes
-      ansible.builtin.known_hosts:
-        name: "{{ hostvars[item]['ansible_host'] }}"
-        key: "{{ lookup('pipe', 'ssh-keyscan -H ' + hostvars[item]['ansible_host'] + ' 2>/dev/null') }}"
-        state: present
+    - name: Wait for SSH and scan host keys for all cluster nodes
+      ansible.builtin.shell: |
+        for i in $(seq 1 12); do
+          key=$(ssh-keyscan -H {{ hostvars[item]['ansible_host'] }} 2>/dev/null)
+          if [ -n "$key" ]; then
+            echo "$key"
+            exit 0
+          fi
+          sleep 5
+        done
+        exit 1
+      register: keyscan_result
       loop: "{{ groups['rke2_cluster'] }}"
       changed_when: false
       ignore_errors: yes
+      tags:
+        - always
+
+    - name: Add scanned host keys to known_hosts
+      ansible.builtin.known_hosts:
+        name: "{{ hostvars[item.item]['ansible_host'] }}"
+        key: "{{ item.stdout }}"
+        state: present
+      loop: "{{ keyscan_result.results }}"
+      when: item.rc == 0 and item.stdout != ""
       tags:
         - always
 
@@ -219,13 +236,20 @@
     - name: Wait and verify node registration
       shell: |
         export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+        elapsed=0
+        max_wait=900
         until ssh -i ~/github/ec2.pem ubuntu@{{ groups['rke2_cluster'][0] }} "sudo /var/lib/rancher/rke2/bin/kubectl get nodes | grep -q {{ inventory_hostname }}" 2>/dev/null; do
+          if [ "$elapsed" -ge "$max_wait" ]; then
+            echo "Timed out after ${max_wait}s waiting for {{ inventory_hostname }} to register"
+            exit 1
+          fi
           echo "Waiting for {{ inventory_hostname }} to register..."
           sleep 10
+          elapsed=$((elapsed + 10))
         done
         echo "{{ inventory_hostname }} is now registered!"
-      retries: 30
-      delay: 10
+      async: 930
+      poll: 10
       changed_when: false
       ignore_errors: yes
       tags:

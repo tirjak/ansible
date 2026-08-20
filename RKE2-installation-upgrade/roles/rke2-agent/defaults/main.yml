@@ -4,7 +4,11 @@ rke2_agent_service_name: rke2-agent
 
 # Get control plane IP
 rke2_control_plane_ip: "{{ hostvars[groups['rke2_cluster'][0]]['ansible_default_ipv4']['address'] }}"
-rke2_server_url: "https://{{ rke2_control_plane_ip }}:6443"
+# RKE2 agents must bootstrap against the supervisor port (9345), not the
+# Kubernetes API port (6443). Port 6443 only serves the k8s API and will
+# reject unauthenticated bootstrap requests with 401, which is what caused
+# "failed to get CA certs: Unauthorized" on agent join.
+rke2_server_url: "https://{{ rke2_control_plane_ip }}:9345"
 
 # Agent configuration options
 rke2_agent_config: {}
