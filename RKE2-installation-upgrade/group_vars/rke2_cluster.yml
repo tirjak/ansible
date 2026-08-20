@@ -8,7 +8,7 @@ rke2_channel: "stable"
 
 # Security Token (IMPORTANT: Override this in your environment)
 # Generate with: head -c 32 /dev/urandom | base64
-rke2_token: "rke2-secure-token-cluster-setup-12345"
+rke2_token: "rke2-supersecure-token-2026"
 
 # RKE2 Configuration Paths (generally don't change these)
 rke2_config_dir: "/etc/rancher/rke2"
